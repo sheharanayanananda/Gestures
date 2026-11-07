@@ -1,0 +1,27 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Model Files (auto-downloaded at runtime)
+hand_landmarker.task
+*.task
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local Calibration & Config
+calibration.json
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
