@@ -2,9 +2,9 @@
 
 Features:
 - Instant startup: zero calibration needed!
-- Ergonomic virtual air-pad with pointer ballistics.
+- Real-time fluid edge snapping (9 placements: Halves, Maximize, Quadrants).
+- Minimizable application preview (Yellow button or [m] key).
 - Geometric window auto-grab (no simulated mouse clicks).
-- Native macOS edge window snapping & tiling (Half, Maximize, Quadrants).
 - 3-finger pinch (Thumb + Index + Middle) to grab and move windows.
 """
 import argparse
@@ -12,6 +12,7 @@ import logging
 import sys
 import time
 
+import AppKit
 import cv2
 
 import config
@@ -40,6 +41,23 @@ def parse_args():
         help="Webcam device index (default: 0)",
     )
     return parser.parse_args()
+
+
+def get_preview_appkit_window(window_title: str):
+    """Finds the NSWindow for the preview and ensures minimize button is enabled."""
+    app = AppKit.NSApplication.sharedApplication()
+    for win in app.windows():
+        if win.title() == window_title:
+            # Enable standard macOS minimize & close buttons
+            current_style = win.styleMask()
+            win.setStyleMask_(
+                current_style
+                | AppKit.NSWindowStyleMaskMiniaturizable
+                | AppKit.NSWindowStyleMaskTitled
+                | AppKit.NSWindowStyleMaskClosable
+            )
+            return win
+    return None
 
 
 def main():
@@ -76,8 +94,13 @@ def main():
 
     window_name = "Air Gestures - Window Controller & Snapper"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.waitKey(20)
+
+    # Enable native minimize capability on macOS window
+    ns_preview_window = get_preview_appkit_window(window_name)
 
     logger.info("Instant motion tracking active. Pinch 3 fingers over a window to grab and move it.")
+    logger.info("Press [m] to minimize preview window to Dock, [q] to exit.")
 
     try:
         while True:
@@ -120,11 +143,12 @@ def main():
                 smooth_sx, smooth_sy = point_filter.filter(raw_sx, raw_sy)
                 screen_cursor = (int(round(smooth_sx)), int(round(smooth_sy)))
 
-                # 5. Window Dragging & Snapping State Machine
+                # 5. Window Dragging & Fluid Snapping State Machine
                 if d_event == PinchEvent.PINCH_DOWN:
                     window_manager.start_drag(screen_cursor[0], screen_cursor[1])
                     target_window_name = window_manager.active_window_name
                 elif d_event == PinchEvent.PINCH_HOLD:
+                    # Fluid Real-Time Snapping happens right inside update_drag!
                     snap_zone = window_manager.update_drag(screen_cursor[0], screen_cursor[1])
                     target_window_name = window_manager.active_window_name
                 elif d_event == PinchEvent.PINCH_UP:
@@ -155,12 +179,22 @@ def main():
                 screen_cursor=screen_cursor,
             )
 
-            cv2.imshow(window_name, hud_frame)
+            # Check if preview window is minimized
+            is_minimized = ns_preview_window and ns_preview_window.isMiniaturized()
+            if not is_minimized:
+                cv2.imshow(window_name, hud_frame)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):  # 'q' or Esc
                 logger.info("Quit requested by user.")
                 break
+            elif key == ord("m") and ns_preview_window:
+                if ns_preview_window.isMiniaturized():
+                    ns_preview_window.deminiaturize_(None)
+                    logger.info("Preview window restored from Dock.")
+                else:
+                    ns_preview_window.miniaturize_(None)
+                    logger.info("Preview window minimized to Dock.")
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")

@@ -1,4 +1,4 @@
-"""Heads-Up Display (HUD) overlay: real-time visual feedback for zero-calibration gestures & snapping."""
+"""Heads-Up Display (HUD) overlay: real-time visual feedback for zero-calibration gestures & fluid snapping."""
 from typing import Optional, Tuple
 
 import cv2
@@ -40,7 +40,7 @@ class HUDOverlay:
         if is_dragging and snap_zone != SnapZone.NONE:
             self._draw_snap_indicator(display, snap_zone, w, h)
 
-        # 4. Draw Top Status Banner with Target Window Name
+        # 4. Draw Top Status Banner with Target Window Name and Active Tile
         self._draw_status_bar(
             display, screen_cursor, is_dragging, target_window_name, snap_zone, w, h
         )
@@ -123,25 +123,30 @@ class HUDOverlay:
         cv2.rectangle(img, (bx, by), (bx + int(bar_w * fill_ratio), by + bar_h), bar_color, -1)
 
     def _draw_snap_indicator(self, img: np.ndarray, zone: SnapZone, w: int, h: int):
-        """Highlights the active snap edge on the camera preview."""
+        """Highlights the active snap edge/corner on the camera preview for all 9 placements."""
         overlay = img.copy()
-        edge_thickness = 16
+        edge_thickness = 18
         color = (0, 220, 255)
 
         if zone == SnapZone.LEFT_HALF:
             cv2.rectangle(overlay, (0, 0), (edge_thickness, h), color, -1)
         elif zone == SnapZone.RIGHT_HALF:
             cv2.rectangle(overlay, (w - edge_thickness, 0), (w, h), color, -1)
-        elif zone == SnapZone.MAXIMIZE:
-            cv2.rectangle(overlay, (0, 0), (w, edge_thickness), color, -1)
-        elif zone == SnapZone.TOP_LEFT:
-            cv2.rectangle(overlay, (0, 0), (edge_thickness * 3, edge_thickness * 3), color, -1)
-        elif zone == SnapZone.TOP_RIGHT:
-            cv2.rectangle(overlay, (w - edge_thickness * 3, 0), (w, edge_thickness * 3), color, -1)
-        elif zone == SnapZone.BOTTOM_LEFT:
-            cv2.rectangle(overlay, (0, h - edge_thickness * 3), (edge_thickness * 3, h), color, -1)
-        elif zone == SnapZone.BOTTOM_RIGHT:
-            cv2.rectangle(overlay, (w - edge_thickness * 3, h - edge_thickness * 3), (w, h), color, -1)
+        elif zone == SnapZone.UPPER_HALF:
+            cv2.rectangle(overlay, (0, 0), (w, edge_thickness), (0, 255, 120), -1)
+        elif zone == SnapZone.LOWER_HALF:
+            cv2.rectangle(overlay, (0, h - edge_thickness), (w, h), (0, 255, 120), -1)
+        elif zone == SnapZone.FULL_SCREEN:
+            cv2.rectangle(overlay, (0, 0), (w, edge_thickness * 2), (0, 200, 255), -1)
+            cv2.putText(overlay, "FULL SCREEN", (w // 2 - 60, 24), self.font, 0.5, (0, 0, 0), 2)
+        elif zone == SnapZone.UPPER_LEFT:
+            cv2.rectangle(overlay, (0, 0), (edge_thickness * 4, edge_thickness * 3), color, -1)
+        elif zone == SnapZone.UPPER_RIGHT:
+            cv2.rectangle(overlay, (w - edge_thickness * 4, 0), (w, edge_thickness * 3), color, -1)
+        elif zone == SnapZone.LOWER_LEFT:
+            cv2.rectangle(overlay, (0, h - edge_thickness * 3), (edge_thickness * 4, h), color, -1)
+        elif zone == SnapZone.LOWER_RIGHT:
+            cv2.rectangle(overlay, (w - edge_thickness * 4, h - edge_thickness * 3), (w, h), color, -1)
 
         cv2.addWeighted(overlay, 0.45, img, 0.55, 0, img)
 
@@ -155,12 +160,12 @@ class HUDOverlay:
         w: int,
         h: int,
     ):
-        """Top status bar with mode, target window, snap zone, and cursor coordinates."""
+        """Top status bar with mode, target window, active snap tile, and cursor coordinates."""
         cv2.rectangle(img, (0, 0), (w, 58), (20, 20, 20), -1)
 
         if is_dragging:
             if snap_zone != SnapZone.NONE:
-                status_text = f"SNAP TARGET: [{snap_zone.value.upper()}] - Release to Tile"
+                status_text = f"FLUID SNAP: [{snap_zone.value.upper()}] - Pull center to un-snap"
                 status_color = (0, 220, 255)
             else:
                 target_str = f"[{target_name}]" if target_name else ""
@@ -180,10 +185,10 @@ class HUDOverlay:
             cursor_str = f"({screen_cursor[0]}, {screen_cursor[1]})"
             cv2.putText(img, cursor_str, (w - 180, 36), self.font, 0.55, (220, 220, 220), 1, cv2.LINE_AA)
 
-        # Bottom help
+        # Bottom help text
         cv2.putText(
             img,
-            "[q] Quit",
+            "[m] Minimize / Restore Preview  |  [q] Quit",
             (20, h - 20),
             self.font,
             0.5,

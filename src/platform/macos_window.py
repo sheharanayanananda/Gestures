@@ -1,4 +1,4 @@
-"""macOS native window interaction with geometric hit-testing and edge tiling/snapping."""
+"""macOS native window interaction with real-time fluid edge snapping and tiling."""
 import logging
 from typing import Optional, Tuple
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class MacOSWindowManager:
-    """Non-invasive window hit-testing, direct geometric manipulation, and native edge snapping."""
+    """Non-invasive window hit-testing, direct geometric manipulation, and real-time fluid edge snapping."""
 
     def __init__(self):
         screen_w, screen_h = self.get_main_screen_resolution()
@@ -23,9 +23,10 @@ class MacOSWindowManager:
         self.active_window = None
         self.active_window_name: str = ""
         self.orig_size: Optional[Tuple[float, float]] = None
+        self.orig_pos: Optional[Tuple[float, float]] = None
         self.grab_offset: Tuple[float, float] = (0.0, 0.0)
         self.is_dragging = False
-        self.is_snapped = False
+        self.current_snap_zone: SnapZone = SnapZone.NONE
 
     @staticmethod
     def get_main_screen_resolution() -> Tuple[int, int]:
@@ -53,12 +54,10 @@ class MacOSWindowManager:
             return None
 
         for w in window_list:
-            # Layer 0 are standard application windows
             if w.get(Quartz.kCGWindowLayer) != 0:
                 continue
 
             owner = w.get(Quartz.kCGWindowOwnerName, "")
-            # Skip python preview and system background daemons
             if owner in ("Python", "Window Server", "Dock"):
                 continue
 
@@ -68,7 +67,6 @@ class MacOSWindowManager:
             bw = bounds.get("Width", 0)
             bh = bounds.get("Height", 0)
 
-            # Hit-test
             if bx <= x <= bx + bw and by <= y <= by + bh:
                 pid = w.get(Quartz.kCGWindowOwnerPID)
                 app = ApplicationServices.AXUIElementCreateApplication(pid)
@@ -76,7 +74,6 @@ class MacOSWindowManager:
                     app, ApplicationServices.kAXWindowsAttribute, None
                 )
                 if err == 0 and ax_windows:
-                    # Target top window of this application
                     win = ax_windows[0]
                     pos = self.get_window_position(win) or (float(bx), float(by))
                     size = self.get_window_size(win) or (float(bw), float(bh))
@@ -150,53 +147,68 @@ class MacOSWindowManager:
         self.active_window = win
         self.active_window_name = owner_name
         self.orig_size = size
+        self.orig_pos = pos
         self.grab_offset = (pos[0] - cursor_x, pos[1] - cursor_y)
         self.is_dragging = True
+        self.current_snap_zone = SnapZone.NONE
 
         # Bring window to front
         ApplicationServices.AXUIElementPerformAction(win, "AXRaise")
-        logger.info("Auto-grabbed [%s] at %s (offset: %s)", owner_name, pos, self.grab_offset)
+        logger.info("Auto-grabbed [%s] at %s (orig_size: %s)", owner_name, pos, size)
         return True
 
     def update_drag(self, cursor_x: float, cursor_y: float) -> SnapZone:
-        """Translates window smoothly and returns any active edge snap zone."""
+        """Translates window smoothly and triggers REAL-TIME fluid snapping when entering any edge/corner."""
         if not self.is_dragging or not self.active_window:
             return SnapZone.NONE
 
-        snap_zone = self.snapper.detect_snap_zone(cursor_x, cursor_y)
+        new_zone = self.snapper.detect_snap_zone(cursor_x, cursor_y, self.current_snap_zone)
 
-        # Direct window translation (No simulated mouse events!)
-        target_x = cursor_x + self.grab_offset[0]
-        target_y = cursor_y + self.grab_offset[1]
-        self.set_window_position(self.active_window, target_x, target_y)
+        # Zone Transition Check
+        if new_zone != self.current_snap_zone:
+            if new_zone != SnapZone.NONE:
+                # Entering a Snap Zone: Immediately morph and position the window to the tile!
+                tile_rect: Optional[WindowRect] = self.snapper.get_tile_rect(new_zone)
+                if tile_rect:
+                    self.set_window_size(self.active_window, tile_rect.width, tile_rect.height)
+                    self.set_window_position(self.active_window, tile_rect.x, tile_rect.y)
+                    self.current_snap_zone = new_zone
+                    logger.info("Fluid Snap: [%s] snapped to %s", self.active_window_name, new_zone.value)
+            else:
+                # Exiting Snap Zone back into Free Space: Restore original floating dimensions!
+                if self.orig_size:
+                    self.set_window_size(self.active_window, self.orig_size[0], self.orig_size[1])
+                    # Re-anchor grab offset so window follows hand naturally
+                    self.grab_offset = (-self.orig_size[0] / 2.0, -25.0)
+                    target_x = cursor_x + self.grab_offset[0]
+                    target_y = cursor_y + self.grab_offset[1]
+                    self.set_window_position(self.active_window, target_x, target_y)
+                self.current_snap_zone = SnapZone.NONE
+                logger.info("Fluid Un-snap: [%s] restored to floating", self.active_window_name)
+        else:
+            # Continuing within the same zone
+            if self.current_snap_zone == SnapZone.NONE:
+                # Free space movement: smooth translation following hand offset
+                target_x = cursor_x + self.grab_offset[0]
+                target_y = cursor_y + self.grab_offset[1]
+                self.set_window_position(self.active_window, target_x, target_y)
 
-        # If window was previously tiled and dragged into free space, restore original dimensions
-        if self.is_snapped and snap_zone == SnapZone.NONE and self.orig_size:
-            self.set_window_size(self.active_window, self.orig_size[0], self.orig_size[1])
-            self.is_snapped = False
-
-        return snap_zone
+        return self.current_snap_zone
 
     def end_drag(self, cursor_x: float, cursor_y: float) -> SnapZone:
-        """Releases the grabbed window, applying edge snapping if dropped in a snap zone."""
+        """Commits the window in its current snapped or floating position upon release."""
         if not self.is_dragging or not self.active_window:
             self.is_dragging = False
             return SnapZone.NONE
 
-        snap_zone = self.snapper.detect_snap_zone(cursor_x, cursor_y)
-
-        if snap_zone != SnapZone.NONE:
-            tile_rect: Optional[WindowRect] = self.snapper.get_tile_rect(snap_zone)
-            if tile_rect:
-                # Snap to tile geometry!
-                self.set_window_size(self.active_window, tile_rect.width, tile_rect.height)
-                self.set_window_position(self.active_window, tile_rect.x, tile_rect.y)
-                self.is_snapped = True
-                logger.info("Snapped [%s] to %s", self.active_window_name, snap_zone.value)
+        final_zone = self.current_snap_zone
+        if final_zone != SnapZone.NONE:
+            logger.info("Committed [%s] in snap tile: %s", self.active_window_name, final_zone.value)
         else:
-            logger.info("Dropped [%s] in free space", self.active_window_name)
+            logger.info("Committed [%s] in free space", self.active_window_name)
 
         self.active_window = None
         self.active_window_name = ""
         self.is_dragging = False
-        return snap_zone
+        self.current_snap_zone = SnapZone.NONE
+        return final_zone
